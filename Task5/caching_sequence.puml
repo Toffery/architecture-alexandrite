@@ -1,0 +1,55 @@
+@startuml
+title Чтение списка и изменение статуса заказа
+hide footbox
+skinparam shadowing false
+autonumber
+actor "Оператор" as Operator
+participant "MES UI" as UI
+participant "MES API" as API
+database "Redis" as Cache
+database "MES DB" as DB
+
+    Operator->UI: Открыть список заказов
+    UI->API: GET список с фильтрами и страницей
+    API->API: Проверить права и параметры
+    API->Cache: Получить текущую версию списка
+    Cache-->API: Версия v1
+    API->Cache: GET страницы с версией v1
+    alt Страница есть в кеше
+        Cache-->API: Данные страницы
+    else Страницы нет
+        Cache-->API: Cache miss
+        API->DB: SELECT с фильтрами, сортировкой и пагинацией
+        DB-->API: Данные страницы
+        API->Cache: SET страницы с версией v1, TTL 60 секунд
+        Cache-->API: OK
+    end
+    API-->UI: Список заказов
+    UI-->Operator: Показать список
+
+    Operator->UI: Изменить статус / взять заказ
+    UI->API: Запрос изменения заказа
+    API->DB: Условное UPDATE с проверкой статуса и исполнителя
+    alt Изменение допустимо
+        DB-->API: COMMIT, обновленный заказ
+        API->Cache: Сменить версию списка на новый токен v2
+        Cache-->API: OK
+        API-->UI: Изменение сохранено
+        UI->API: Повторно получить список
+        API->Cache: Получить версию и страницу
+        Cache-->API: Версия v2, Cache miss
+        API->DB: SELECT актуальной страницы
+        DB-->API: Данные страницы
+        API->Cache: SET страницы с версией v2, TTL 60 секунд
+        Cache-->API: OK
+        API-->UI: Обновленный список
+        UI-->Operator: Показать актуальный результат
+    else Заказ уже изменен или занят
+        DB-->API: Изменение не выполнено
+        API-->UI: Конфликт, HTTP 409
+        UI-->Operator: Заказ изменен, обновите список
+    end
+
+    note over API,Cache: При сбое Redis читаем БД, ошибку инвалидации повторяем
+    note over Cache: Страницы старой версии удаляются по TTL
+@enduml
